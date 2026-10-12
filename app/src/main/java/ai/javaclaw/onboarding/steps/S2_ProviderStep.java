@@ -1,0 +1,94 @@
+package ai.javaclaw.onboarding.steps;
+
+import ai.javaclaw.configuration.ConfigurationManager;
+import ai.javaclaw.llm.LlmProviderProperties;
+import ai.javaclaw.onboarding.AgentOnboardingProvider;
+import ai.javaclaw.onboarding.AgentOnboardingProviders;
+import ai.javaclaw.onboarding.OnboardingProvider;
+import org.springframework.core.annotation.Order;
+import org.springframework.core.env.Environment;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+
+import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+@Component
+@Order(20)
+public class S2_ProviderStep implements OnboardingProvider {
+
+    static final String SESSION_PROVIDER = "onboarding.provider";
+    static final String SESSION_BASE_URL = "onboarding.baseUrl";
+    static final String SESSION_API_KEY = "onboarding.apiKey";
+    static final String SESSION_MODEL = "onboarding.model";
+
+    private final AgentOnboardingProviders agentOnboardingProviders;
+    private final Environment env;
+
+    public S2_ProviderStep(AgentOnboardingProviders agentOnboardingProviders, Environment env) {
+        this.agentOnboardingProviders = agentOnboardingProviders;
+        this.env = env;
+    }
+
+    @Override
+    public String getStepId() {return "provider";}
+
+    @Override
+    public String getStepTitle() {return "Provider";}
+
+    @Override
+    public String getTemplatePath() {return "onboarding/steps/S2-provider";}
+
+    @Override
+    public void prepareModel(Map<String, Object> session, Map<String, Object> model) {
+        model.put("providers", agentOnboardingProviders.getAll());
+        model.put("selectedProvider", session.getOrDefault(SESSION_PROVIDER, env.getProperty("agent.llm.providers.default.provider", "")));
+    }
+
+    @Override
+    public String processStep(Map<String, String> formParams, Map<String, Object> session) {
+        String providerId = formParams.get("provider");
+        if (providerId == null || providerId.isBlank()) {
+            return "Choose one of the supported providers to continue.";
+        }
+        AgentOnboardingProvider agentOnboardingProvider = agentOnboardingProviders.getById(providerId);
+        // Clear downstream session state when provider changes
+        String currentProvider = (String) session.get(SESSION_PROVIDER);
+        if (!agentOnboardingProvider.getId().equals(currentProvider)) {
+            session.remove(SESSION_BASE_URL);
+            session.remove(SESSION_API_KEY);
+            session.remove(SESSION_MODEL);
+        }
+        session.put(SESSION_PROVIDER, agentOnboardingProvider.getId());
+        return null;
+    }
+
+    @Override
+    public void saveConfiguration(Map<String, Object> session, ConfigurationManager configurationManager) throws IOException {
+        String providerId = (String) session.get(SESSION_PROVIDER);
+        if (providerId == null || providerId.isBlank()) {
+            return;
+        }
+        String baseUrl = (String) session.getOrDefault(SESSION_BASE_URL, "");
+        String apiKey = (String) session.getOrDefault(SESSION_API_KEY, "");
+        String model = (String) session.get(SESSION_MODEL);
+
+        AgentOnboardingProvider agentOnboardingProvider = agentOnboardingProviders.getById(providerId);
+
+        // The single provider configured during onboarding becomes the "default" named provider.
+        String base = "agent.llm.providers." + LlmProviderProperties.DEFAULT_PROVIDER_NAME;
+        Map<String, Object> props = new LinkedHashMap<>();
+        props.put(base + ".provider", agentOnboardingProvider.getId());
+        if (StringUtils.hasText(baseUrl)) {
+            props.put(base + ".base-url", baseUrl);
+        }
+        if (StringUtils.hasText(apiKey)) {
+            props.put(base + ".api-key", apiKey);
+        }
+        if (StringUtils.hasText(model)) {
+            props.put(base + ".model", model);
+        }
+        configurationManager.updateProperties(props);
+    }
+}
